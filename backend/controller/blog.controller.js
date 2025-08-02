@@ -4,10 +4,9 @@ import User from "../models/user.module.js";
 // CREATE - Create a new blog
 const createBlog = async (request, response) => {
   try {
-    const { title, description } = request.body;
-    const authorId = request.user._id; // From auth middleware
+    const { title, description, tags } = request.body;
+    const authorId = request.user._id;
 
-    // Validation
     if (!title) {
       return response.status(400).json({
         status: false,
@@ -22,6 +21,13 @@ const createBlog = async (request, response) => {
       });
     }
 
+    if (!tags || !Array.isArray(tags) || tags.length === 0) {
+      return response.status(400).json({
+        status: false,
+        message: "At least one tag is required"
+      });
+    }
+
     if (title.length > 200) {
       return response.status(400).json({
         status: false,
@@ -29,16 +35,24 @@ const createBlog = async (request, response) => {
       });
     }
 
-    // Create new blog
+    const validTags = ["sports", "nature", "traveling", "technology", "food", "lifestyle", "education", "entertainment"];
+    const invalidTags = tags.filter(tag => !validTags.includes(tag));
+    if (invalidTags.length > 0) {
+      return response.status(400).json({
+        status: false,
+        message: `Invalid tags: ${invalidTags.join(', ')}. Valid tags are: ${validTags.join(', ')}`
+      });
+    }
+
     const newBlog = new Blog({
       title,
       description,
+      tags,
       author: authorId
     });
 
     const savedBlog = await newBlog.save();
 
-    // Populate author details
     await savedBlog.populate('author', 'name email username');
 
     response.status(201).json({
@@ -61,6 +75,7 @@ const getAllBlogs = async (request, response) => {
   try {
     const blogs = await Blog.find()
       .populate('author', 'name email username')
+      .populate('comments.author', 'name email username')
       .sort({ createdAt: -1 });
 
     response.status(200).json({
@@ -84,7 +99,8 @@ const getBlogById = async (request, response) => {
     const { id } = request.params;
 
     const blog = await Blog.findById(id)
-      .populate('author', 'name email username');
+      .populate('author', 'name email username')
+      .populate('comments.author', 'name email username');
 
     if (!blog) {
       return response.status(404).json({
@@ -115,6 +131,7 @@ const getBlogsByAuthor = async (request, response) => {
 
     const blogs = await Blog.find({ author: authorId })
       .populate('author', 'name email username')
+      .populate('comments.author', 'name email username')
       .sort({ createdAt: -1 });
 
     response.status(200).json({
@@ -136,10 +153,9 @@ const getBlogsByAuthor = async (request, response) => {
 const updateBlog = async (request, response) => {
   try {
     const { id } = request.params;
-    const { title, description } = request.body;
+    const { title, description, tags } = request.body;
     const userId = request.user._id;
 
-    // Find blog
     const blog = await Blog.findById(id);
     if (!blog) {
       return response.status(404).json({
@@ -148,7 +164,6 @@ const updateBlog = async (request, response) => {
       });
     }
 
-    // Check if user is the author
     if (blog.author.toString() !== userId.toString()) {
       return response.status(403).json({
         status: false,
@@ -156,7 +171,6 @@ const updateBlog = async (request, response) => {
       });
     }
 
-    // Validation
     if (title && title.length > 200) {
       return response.status(400).json({
         status: false,
@@ -164,12 +178,30 @@ const updateBlog = async (request, response) => {
       });
     }
 
-    // Update blog
+    if (tags) {
+      if (!Array.isArray(tags) || tags.length === 0) {
+        return response.status(400).json({
+          status: false,
+          message: "At least one tag is required"
+        });
+      }
+
+      const validTags = ["sports", "nature", "traveling", "technology", "food", "lifestyle", "education", "entertainment"];
+      const invalidTags = tags.filter(tag => !validTags.includes(tag));
+      if (invalidTags.length > 0) {
+        return response.status(400).json({
+          status: false,
+          message: `Invalid tags: ${invalidTags.join(', ')}. Valid tags are: ${validTags.join(', ')}`
+        });
+      }
+    }
+
     const updatedBlog = await Blog.findByIdAndUpdate(
       id,
-      { title, description },
+      { title, description, tags },
       { new: true, runValidators: true }
-    ).populate('author', 'name email username');
+    ).populate('author', 'name email username')
+     .populate('comments.author', 'name email username');
 
     response.status(200).json({
       status: true,
@@ -192,7 +224,6 @@ const deleteBlog = async (request, response) => {
     const { id } = request.params;
     const userId = request.user._id;
 
-    // Find blog
     const blog = await Blog.findById(id);
     if (!blog) {
       return response.status(404).json({
@@ -201,7 +232,6 @@ const deleteBlog = async (request, response) => {
       });
     }
 
-    // Check if user is the author
     if (blog.author.toString() !== userId.toString()) {
       return response.status(403).json({
         status: false,
@@ -209,7 +239,6 @@ const deleteBlog = async (request, response) => {
       });
     }
 
-    // Delete blog
     await Blog.findByIdAndDelete(id);
 
     response.status(200).json({
@@ -239,7 +268,6 @@ const upvoteBlog = async (request, response) => {
       });
     }
 
-    // Increment upvotes
     blog.upvotes += 1;
     await blog.save();
 
@@ -271,7 +299,6 @@ const downvoteBlog = async (request, response) => {
       });
     }
 
-    // Increment downvotes
     blog.downvotes += 1;
     await blog.save();
 
@@ -290,6 +317,266 @@ const downvoteBlog = async (request, response) => {
   }
 };
 
+// COMMENT - Add comment to blog
+const addComment = async (request, response) => {
+  try {
+    const { id } = request.params;
+    const { comment } = request.body;
+    const userId = request.user._id;
+
+    const blog = await Blog.findById(id);
+    if (!blog) {
+      return response.status(404).json({
+        status: false,
+        message: "Blog not found"
+      });
+    }
+
+    if (!comment) {
+      return response.status(400).json({
+        status: false,
+        message: "Comment is required"
+      });
+    }
+
+    if (comment.length > 1000) {
+      return response.status(400).json({
+        status: false,
+        message: "Comment must be less than 1000 characters"
+      });
+    }
+
+    blog.comments.push({
+      author: userId,
+      content : comment
+    });
+
+    await blog.save();
+
+    const updatedBlog = await Blog.findById(id)
+      .populate('author', 'name email username')
+      .populate('comments.author', 'name email username');
+
+    response.status(201).json({
+      status: true,
+      message: "Comment added successfully",
+      data: updatedBlog
+    });
+
+  } catch (error) {
+    console.error("Add comment error:", error);
+    response.status(500).json({
+      status: false,
+      message: "Internal server error"
+    });
+  }
+};
+
+// COMMENT - Update comment
+const updateComment = async (request, response) => {
+  try {
+    const { blogId, commentId } = request.params;
+    const { content } = request.body;
+    const userId = request.user._id;
+
+    const blog = await Blog.findById(blogId);
+    if (!blog) {
+      return response.status(404).json({
+        status: false,
+        message: "Blog not found"
+      });
+    }
+
+    const comment = blog.comments.id(commentId);
+    if (!comment) {
+      return response.status(404).json({
+        status: false,
+        message: "Comment not found"
+      });
+    }
+
+    if (comment.author.toString() !== userId.toString()) {
+      return response.status(403).json({
+        status: false,
+        message: "You can only update your own comments"
+      });
+    }
+
+    if (!content) {
+      return response.status(400).json({
+        status: false,
+        message: "Comment content is required"
+      });
+    }
+
+    if (content.length > 1000) {
+      return response.status(400).json({
+        status: false,
+        message: "Comment must be less than 1000 characters"
+      });
+    }
+
+    comment.content = content;
+    await blog.save();
+
+    const updatedBlog = await Blog.findById(blogId)
+      .populate('author', 'name email username')
+      .populate('comments.author', 'name email username');
+
+    response.status(200).json({
+      status: true,
+      message: "Comment updated successfully",
+      data: updatedBlog
+    });
+
+  } catch (error) {
+    console.error("Update comment error:", error);
+    response.status(500).json({
+      status: false,
+      message: "Internal server error"
+    });
+  }
+};
+
+// COMMENT - Delete comment
+const deleteComment = async (request, response) => {
+  try {
+    const { blogId, commentId } = request.params;
+    const userId = request.user._id;
+
+    const blog = await Blog.findById(blogId);
+    if (!blog) {
+      return response.status(404).json({
+        status: false,
+        message: "Blog not found"
+      });
+    }
+
+    const comment = blog.comments.id(commentId);
+    if (!comment) {
+      return response.status(404).json({
+        status: false,
+        message: "Comment not found"
+      });
+    }
+
+    if (comment.author.toString() !== userId.toString()) {
+      return response.status(403).json({
+        status: false,
+        message: "You can only delete your own comments"
+      });
+    }
+
+    comment.remove();
+    await blog.save();
+
+    const updatedBlog = await Blog.findById(blogId)
+      .populate('author', 'name email username')
+      .populate('comments.author', 'name email username');
+
+    response.status(200).json({
+      status: true,
+      message: "Comment deleted successfully",
+      data: updatedBlog
+    });
+
+  } catch (error) {
+    console.error("Delete comment error:", error);
+    response.status(500).json({
+      status: false,
+      message: "Internal server error"
+    });
+  }
+};
+
+// COMMENT - Vote on comment
+const voteComment = async (request, response) => {
+  try {
+    const { blogId, commentId } = request.params;
+    const { voteType } = request.body;
+
+    const blog = await Blog.findById(blogId);
+    if (!blog) {
+      return response.status(404).json({
+        status: false,
+        message: "Blog not found"
+      });
+    }
+
+    const comment = blog.comments.id(commentId);
+    if (!comment) {
+      return response.status(404).json({
+        status: false,
+        message: "Comment not found"
+      });
+    }
+
+    if (voteType === 'upvote') {
+      comment.upvotes += 1;
+    } else if (voteType === 'downvote') {
+      comment.downvotes += 1;
+    } else {
+      return response.status(400).json({
+        status: false,
+        message: "Vote type must be 'upvote' or 'downvote'"
+      });
+    }
+
+    await blog.save();
+
+
+    const updatedBlog = await Blog.findById(blogId)
+      .populate('author', 'name email username')
+      .populate('comments.author', 'name email username');
+
+    response.status(200).json({
+      status: true,
+      message: `Comment ${voteType}d successfully`,
+      data: updatedBlog
+    });
+
+  } catch (error) {
+    console.error("Vote comment error:", error);
+    response.status(500).json({
+      status: false,
+      message: "Internal server error"
+    });
+  }
+};
+
+// BLOG - Get blogs by tag
+const getBlogsByTag = async (request, response) => {
+  try {
+    const { tag } = request.params;
+
+    const validTags = ["sports", "nature", "traveling", "technology", "food", "lifestyle", "education", "entertainment"];
+    if (!validTags.includes(tag)) {
+      return response.status(400).json({
+        status: false,
+        message: `Invalid tag. Valid tags are: ${validTags.join(', ')}`
+      });
+    }
+
+    const blogs = await Blog.find({ tags: tag })
+      .populate('author', 'name email username')
+      .populate('comments.author', 'name email username')
+      .sort({ createdAt: -1 });
+
+    response.status(200).json({
+      status: true,
+      message: `Blogs with tag '${tag}' retrieved successfully`,
+      data: blogs
+    });
+
+  } catch (error) {
+    console.error("Get blogs by tag error:", error);
+    response.status(500).json({
+      status: false,
+      message: "Internal server error"
+    });
+  }
+};
+
 export {
   createBlog,
   getAllBlogs,
@@ -298,5 +585,10 @@ export {
   updateBlog,
   deleteBlog,
   upvoteBlog,
-  downvoteBlog
+  downvoteBlog,
+  addComment,
+  updateComment,
+  deleteComment,
+  voteComment,
+  getBlogsByTag
 }; 
